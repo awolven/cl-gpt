@@ -48,8 +48,8 @@
 	  
 
 (defun make-request-url (server version service-point &rest args)
-  (apply #'concatenate 'string "https://" server "/" (string-downcase (format nil "~A" version))
-	 (apply #'format nil service-point args)))
+  (concatenate 'string "https://" server "/" (string-downcase (format nil "~A" version))
+	       (apply #'format nil service-point args)))
 
 (defun make-request-arguments (key &optional (content nil content-present-p))
   (cond ((null content-present-p) ;; GET request
@@ -303,7 +303,7 @@ Required
 ID of the model to use. See the model endpoint compatibility table for details on which models work with the Chat API.
 
 `messages'
-sequence
+plist
 Required
 The messages to generate chat completions for, in the chat format.
 
@@ -381,7 +381,8 @@ A unique identifier representing your end-user, which can help OpenAI to monitor
   (assert (typep messages 'sequence))
   (let* ((content (apply #'st-json:jso
 			 "model" (stringify model)
-			 "messages" (st-json:jso messages)
+			 "messages" (list
+				     (apply #'st-json::jso messages))
 			 (append
 			  (when temperature-present-p
 			    (assert (numberp temperature))
@@ -1264,3 +1265,9 @@ The default is text-moderation-latest which will be automatically upgraded over 
     (st-json:read-json
      (apply #'drakma:http-request
 	    (make-request-url server version service-point) (make-request-arguments key content)))))
+
+
+(defun chat (string &optional (model :gpt-3.5-turbo) (temperature 0.7))
+  (princ (st-json:getjso "content" (st-json:getjso "message" (first (st-json:getjso "choices" (create-chat-completion model (list "role" "user" "content" string) :temperature temperature))))))
+  (values))
+

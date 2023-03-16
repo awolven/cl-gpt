@@ -31,6 +31,7 @@
 	   #:list-fine-tune-events-as-stream
 	   #:list-fine-tune-events
 	   #:delete-fine-tune
-	   #:create-moderation))
+	   #:create-moderation
+	   #:chat))
 	   
 	   
