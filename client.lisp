@@ -909,7 +909,7 @@ Use :fine-tune for Fine-tuning. This allows us to validate the format of the upl
        (apply #'drakma:http-request (make-request-url server version service-point) (make-request-arguments key content))))))
 	
 
-(defun delete-gpt-file (file-id &key
+(defun gpt-delete-file (file-id &key
 			      (version *default-version*)
 			      (server  *default-server*)
 			      (key *key*)
