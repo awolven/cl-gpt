@@ -32,6 +32,12 @@
 	   #:list-fine-tune-events
 	   #:delete-fine-tune
 	   #:create-moderation
-	   #:chat))
+	   #:chat
+	   #:reset-chat-context
+	   #:drop-some-interactions
+	   #:permission
+	   #:model
+	   #:file
+	   #:fine-tune))
 	   
 	   

@@ -21,6 +21,19 @@
 
 (set-key-path)
 
+(defun json-as-list (jso)
+  (cond ((eq jso :null) nil)
+	((typep jso 'st-json:jso)
+	 (let ((data (st-json:getjso "data" jso)))
+	   (if data data jso)))
+	((listp jso) jso)
+	(t jso)))
+
+(defun json-as-boolean (jso)
+  (cond ((eq jso :false) nil)
+	((eq jso :true) t)
+	(t jso)))
+
 
 (defun validate-response-format-parameter (arg)
   (cond ((or (string-equal arg "url")
@@ -58,11 +71,18 @@
 	(t (list :method :post
 		 :additional-headers (list (cons :authorization (concatenate 'string "Bearer " key)))
 		 :want-stream t
-		 :content-type :application/json
+		 :content-type "application/json"
 		 :content (st-json:write-json-to-string content)))))
 
 (defun stringify (thing)
   (string-downcase (format nil "~A" thing)))
+
+(defun check-for-error (jso)
+  (let ((error (st-json:getjso "error" jso)))
+    (when error
+      (let ((message (st-json:getjso "message" error))
+	    (type (st-json:getjso "type" error)))
+	(error "GPT error: ~A: ~A" type message)))))
 
 (defun list-models (&key
 		      (version *default-version*)
@@ -70,10 +90,71 @@
 		      (key *key*)
 		    &aux (service-point "/models"))
   "Lists the currently available models, and provides basic information about each one such as the owner and availability."
-  (st-json:read-json
-   (apply #'drakma:http-request (make-request-url server version service-point) (make-request-arguments key))))
+  (let ((jso (st-json:read-json
+	      (apply #'drakma:http-request (make-request-url server version service-point) (make-request-arguments key)))))
+    (check-for-error jso)
+    (let ((jso-list (st-json:getjso "data" jso)))
+      (mapcar #'(lambda (object)
+		  (make-model object))
+	      jso-list))))
 
-(defun get-model (model &key
+(defclass permission ()
+  ((id :accessor id)
+   (object :accessor object)
+   (created :accessor created)
+   (allow-create-engine :accessor allow-create-engine)
+   (allow-sampling :accessor allow-sampling)
+   (allow-logprobs :accessor allow-logprobs)
+   (allow-search-indices :accessor allow-search-indices)
+   (allow-view :accessor allow-view)
+   (allow-fine-tuning :accessor allow-fine-tuning)
+   (organization :accessor organization)
+   (group :accessor group)
+   (blocking? :accessor blocking?)))
+
+(defun make-permission (jso)
+  (let ((permission (make-instance 'permission)))
+    (setf (id permission) (st-json:getjso "id" jso)
+	  (object permission) (st-json:getjso "object" jso)
+	  (created permission) (st-json:getjso "created" jso)
+	  (allow-create-engine permission) (st-json:getjso "allow_create_engine" jso)
+	  (allow-logprobs permission) (st-json:getjso "allow_logprobs" jso)
+	  (allow-search-indices permission) (st-json:getjso "allow_search_indices" jso)
+	  (allow-view permission) (st-json:getjso "allow_view" jso)
+	  (allow-fine-tuning permission) (st-json:getjso "allow_fine_tuning" jso)
+	  (organization permission) (st-json:getjso "organization" jso)
+	  (group permission) (st-json:getjso "group" jso)
+	  (blocking? permission) (st-json:getjso "blocking" jso))
+    permission))
+					      
+
+(defclass model ()
+  ((id :accessor id)
+   (object :accessor object)
+   (created :accessor created)
+   (permission :accessor permission)
+   (root :accessor root)
+   (parent :accessor parent)))
+
+(defun make-model (jso)
+  (let ((model (make-instance 'model)))
+    (setf (id model) (st-json:getjso "id" jso)
+	  (object model) (st-json:getjso "object" jso)
+	  (created model) (st-json:getjso "created" jso)
+	  (permission model) (mapcar #'make-permission (st-json:getjso "permission" jso))
+	  (root model) (st-json:getjso "root" jso)
+	  (parent model) (st-json:getjso "parent" jso))
+    model))
+
+(defmethod print-object ((object model) stream)
+  (print-unreadable-object (object stream :type t)
+    (princ (id object) stream)))    
+
+(defmethod get-model ((model model) &rest args)
+  (apply #'get-model (id model) args))
+
+(defmethod get-model (model &rest args
+			&key
 			  (version *default-version*)
 			  (server  *default-server*)
 			  (key *key*)
@@ -81,31 +162,38 @@
   "Retrieves a model instance, providing basic information about the model such as the owner and permissioning.
 arguments:
 `model' The ID of the model to use for this request, a string or a symbol."
+  (declare (ignore args))
   (assert (or (symbolp model) (stringp model)))
-  (st-json:read-json
-   (apply #'drakma:http-request (make-request-url server version service-point (stringify model)) (make-request-arguments key))))
-	  
+  (let ((jso (st-json:read-json
+	      (apply #'drakma:http-request (make-request-url server version service-point (stringify model)) (make-request-arguments key)))))
+    (check-for-error jso)
+    (make-model jso)))
 
-(defun create-completion (model &key
-				  (prompt            nil prompt-present-p)
-				  (suffix            nil suffix-present-p)
-				  (max-tokens        nil max-tokens-present-p)
-				  (temperature       nil temperature-present-p)
-				  (top-p             nil top-p-present-p)
-				  (n                 nil n-present-p)
-				  (stream            nil stream-present-p)
-				  (logprobs          nil logprobs-present-p)
-				  (echo              nil echo-present-p)
-				  (stop              nil stop-present-p)
-				  (presence-penalty  nil presence-penalty-present-p)
-				  (frequency-penalty nil frequency-penalty-present-p)
-				  (best-of           nil best-of-present-p)
-				  (logit-bias        nil logit-bias-present-p)
-				  (user              nil user-present-p)
-				  (version           *default-version*)
-				  (server            *default-server*)
-				  (key *key*)
-			  &aux (service-point "/completions"))
+(defmethod create-completion ((model model) &rest args)
+  (apply #'create-completion (id model) args))
+
+(defmethod create-completion (model &rest args
+			      &key
+				(prompt            nil prompt-present-p)
+				(suffix            nil suffix-present-p)
+				(max-tokens        nil max-tokens-present-p)
+				(temperature       nil temperature-present-p)
+				(top-p             nil top-p-present-p)
+				(n                 nil n-present-p)
+				(stream            nil stream-present-p)
+				(logprobs          nil logprobs-present-p)
+				(echo              nil echo-present-p)
+				(stop              nil stop-present-p)
+				(presence-penalty  nil presence-penalty-present-p)
+				(frequency-penalty nil frequency-penalty-present-p)
+				(best-of           nil best-of-present-p)
+				(logit-bias        nil logit-bias-present-p)
+				(user              nil user-present-p)
+				(version           *default-version*)
+				(server            *default-server*)
+				(key *key*)
+				
+			      &aux (service-point "/completions"))
   "Creates a completion for the provided prompt and parameters
 
 `model'
@@ -114,7 +202,7 @@ Required
 ID of the model to use. You can use the List models API to see all of your available models, or see our Model overview for descriptions of them.
 
 `prompt'
-string or sequence
+string or list of strings
 Optional
 Defaults to \"<|endoftext|>\"
 The prompt(s) to generate completions for, encoded as a string, array of strings, array of tokens, or array of token arrays.
@@ -225,13 +313,14 @@ As an example, you can pass (list \"50256\" -100) to prevent the \"<|endoftext|>
 string
 Optional
 A unique identifier representing your end-user, which can help OpenAI to monitor and detect abuse."
+  (declare (ignore args))
   (assert (or (symbolp model) (stringp model)))
   (let* ((content (apply #'st-json:jso
 			 "model" (stringify model)
 			 (append
 			  (when prompt-present-p
-			    (assert (typep prompt 'sequence))
-			    (list "prompt" (format nil "~A" prompt)))
+			    (assert (listp prompt))
+			    (list "prompt" prompt))
 			  (when suffix-present-p
 			    (assert (stringp suffix))
 			    (list "suffix" (format nil "~A" suffix)))
@@ -275,27 +364,14 @@ A unique identifier representing your end-user, which can help OpenAI to monitor
 			    (list "user" user)))))
 	 (response-stream
 	   (apply #'drakma:http-request (make-request-url server version service-point) (make-request-arguments key content))))
-    (st-json:read-json response-stream)))
+    (if stream
+	response-stream
+	(let ((jso (st-json:read-json response-stream)))
+	  (check-for-error jso)
+	  jso))))
 
-			       
-			    
-
-(defun create-chat-completion (model messages &key
-						(temperature       nil temperature-present-p)
-						(top-p             nil top-p-present-p)
-						(n                 nil n-present-p)
-						(stream            nil stream-present-p)
-						(stop              nil stop-present-p)
-						(max-tokens        nil max-tokens-present-p)
-						(presence-penalty  nil presence-penalty-present-p)
-						(frequency-penalty nil frequency-penalty-present-p)
-						(logit-bias        nil logit-bias-present-p)
-						(user              nil user-present-p)
-						(version           *default-version*)
-						(server            *default-server*)
-						(key *key*)
-			       &aux (service-point "/chat/completions"))
-  "Creates a completion for the chat message.
+(defgeneric create-chat-completion (model messages &rest args)
+  (:documentation "Creates a completion for the chat message.
 
 `model'
 string or symbol
@@ -376,7 +452,29 @@ Accepts a plist that maps tokens (specified by their token ID in the tokenizer) 
 `user'
 string
 Optional
-A unique identifier representing your end-user, which can help OpenAI to monitor and detect abuse."
+A unique identifier representing your end-user, which can help OpenAI to monitor and detect abuse."))
+  
+
+(defmethod create-chat-completion ((model model) messages &rest args)
+  (apply #'create-chat-completion (id model) messages args))			       
+
+(defmethod create-chat-completion (model messages &rest args
+				   &key
+				     (temperature       nil temperature-present-p)
+				     (top-p             nil top-p-present-p)
+				     (n                 nil n-present-p)
+				     (stream            nil stream-present-p)
+				     (stop              nil stop-present-p)
+				     (max-tokens        nil max-tokens-present-p)
+				     (presence-penalty  nil presence-penalty-present-p)
+				     (frequency-penalty nil frequency-penalty-present-p)
+				     (logit-bias        nil logit-bias-present-p)
+				     (user              nil user-present-p)
+				     (version           *default-version*)
+				     (server            *default-server*)
+				     (key *key*)
+				   &aux (service-point "/chat/completions"))
+  (declare (ignore args))
   (assert (or (symbolp model) (stringp model)))
   (assert (typep messages 'sequence))
   (let* ((content (apply #'st-json:jso
@@ -418,9 +516,10 @@ A unique identifier representing your end-user, which can help OpenAI to monitor
 	   (apply #'drakma:http-request (make-request-url server version service-point) (make-request-arguments key content))))
     (if stream
 	response-stream
-	(st-json:read-json response-stream))))
-  
-  
+	(let* ((jso (st-json:read-json response-stream)))
+	  (check-for-error jso)
+	  jso))))
+	  
 
 (defun create-edit (instruction &key
 				  (model :text-davici-edit-001)
@@ -434,9 +533,14 @@ A unique identifier representing your end-user, which can help OpenAI to monitor
 		    &aux (service-point "/edits"))
   "Creates a new edit for the provided input, instruction, and parameters.
 
-`model'
+`instruction'
 string
 Required
+The instruction that tells the model how to edit the prompt.
+
+`model'
+string
+Optional
 ID of the model to use. You can use the text-davinci-edit-001 or code-davinci-edit-001 model with this endpoint.
 
 `input'
@@ -444,11 +548,6 @@ string
 Optional
 Defaults to \"\"
 The input text to use as a starting point for the edit.
-
-`instruction'
-string
-Required
-The instruction that tells the model how to edit the prompt.
 
 `n'
 integer
@@ -573,15 +672,15 @@ string
 Required
 The image to edit. Must be a valid PNG file, less than 4MB, and square. If mask is not provided, image must have transparency, which will be used as the mask.
 
-`mask'
-string
-Optional
-An additional image whose fully transparent areas (e.g. where alpha is zero) indicate where image should be edited. Must be a valid PNG file, less than 4MB, and have the same dimensions as image.
-
 `prompt'
 string
 Required
 A text description of the desired image(s). The maximum length is 1000 characters.
+
+`mask'
+string
+Optional
+An additional image whose fully transparent areas (e.g. where alpha is zero) indicate where image should be edited. Must be a valid PNG file, less than 4MB, and have the same dimensions as image.
 
 `n'
 integer
@@ -688,18 +787,12 @@ A unique identifier representing your end-user, which can help OpenAI to monitor
     (st-json:read-json
      (apply #'drakma:http-request
 	    (make-request-url server version service-point) (make-request-arguments key content)))))
-  
 
-(defun create-embeddings (model input &key
-					(user    nil user-present-p)
-					(version *default-version*)
-					(server  *default-server*)
-					(key *key*)
-			  &aux (service-point "/embeddings"))
-  "Creates an embedding vector representing the input text.
+(defgeneric create-embeddings (model input &rest args)
+  (:documentation "Creates an embedding vector representing the input text.
 
 `model'
-string
+model or string
 Required
 ID of the model to use. You can use the List models API to see all of your available models, or see our Model overview for descriptions of them.
 
@@ -711,12 +804,30 @@ Input text to get embeddings for, encoded as a string or array of tokens. To get
 `user'
 string
 Optional
-A unique identifier representing your end-user, which can help OpenAI to monitor and detect abuse."
+A unique identifier representing your end-user, which can help OpenAI to monitor and detect abuse."))
+
+(defmethod create-embeddings ((model model) (input string) &rest args)
+  (apply #'create-embeddings (id model) input args))
+
+(defmethod create-embeddings ((model model) (input sequence) &rest args)
+  (apply #'create-embeddings (id model) (coerce input 'list) args))
+
+(defmethod create-embeddings (model input &rest args
+			      &key
+				(user    nil user-present-p)
+				(version *default-version*)
+				(server  *default-server*)
+				(key *key*)
+			      &aux (service-point "/embeddings"))
+  (declare (ignore args))
   (assert (stringp model))
   (assert (typep input 'sequence))
   (let* ((content (apply #'st-json:jso
 			 "model" (stringify model)
-			 "input" input
+			 "input" (if (stringp input)
+				     input
+				     (list
+				      (apply #'st-json::jso input)))
 			 (append
 			  (when user-present-p
 			    (assert (stringp user))
@@ -770,6 +881,8 @@ The sampling temperature, between 0 and 1. Higher values like 0.8 will make the 
 string
 Optional
 The language of the input audio. Supplying the input language in ISO-639-1 format will improve accuracy and latency."
+  (when (typep model 'model)
+    (setq model (id model)))
   (assert (stringp file))
   (assert (or (symbolp model) (stringp model)))
   (let* ((content (apply #'st-json:jso
@@ -832,7 +945,8 @@ number
 Optional
 Defaults to 0
 The sampling temperature, between 0 and 1. Higher values like 0.8 will make the output more random, while lower values like 0.2 will make it more focused and deterministic. If set to 0, the model will use log probability to automatically increase the temperature until certain thresholds are hit."
-  
+  (when (typep model 'model)
+    (setq model (id model)))
   (assert (stringp file))
   (assert (or (stringp model) (stringp model)))
   (let* ((content (apply #'st-json:jso
@@ -863,7 +977,7 @@ The sampling temperature, between 0 and 1. Higher values like 0.8 will make the 
    (apply #'drakma:http-request (make-request-url server version service-point) (make-request-arguments key))))
   
 
-(defun upload-file (file &key
+(defun upload-jsonl-file (file &key
 			   (purpose :fine-tune)
 			   (version *default-version*)
 			   (server  *default-server*)
@@ -872,7 +986,7 @@ The sampling temperature, between 0 and 1. Higher values like 0.8 will make the 
   "Upload a file that contains document(s) to be used across various endpoints/features. Currently, the size of all the files uploaded by one organization can be up to 1 GB. Please contact us if you need to increase the storage limit.
 
 `file'
-string, pathname, or stream
+string or pathname
 Required
 The JSON Lines file to be uploaded.
 
@@ -884,32 +998,32 @@ Optional
 The intended purpose of the uploaded documents. Defaults to :fine-tune.
 
 Use :fine-tune for Fine-tuning. This allows us to validate the format of the uploaded file."
-  (assert (typep file '(or pathname string stream)))
-  (assert (stringp purpose))
-  (flet ((stream-to-lines (stream)
-	   (let ((lines ()))
-	     (loop with char
-		   with line = (make-array 64 :adjustable t :fill-pointer 0 :element-type 'character)
-		   do (setq char (read-char stream nil :eof))
-		   when (eq char :eof)
-		     do (return)
-		   when (char= char #\Newline)
-		     do (push line lines)
-			(setq line (make-array 64 :adjustable t :fill-pointer 0 :element-type 'character))
-		   unless (or (char= char #\Return) (char= char #\Newline))
-		     do (vector-push-extend char line)
-		   finally (return (nreverse lines))))))
-    (let ((content (st-json:jso
-		    "purpose" (stringify purpose)
-		    "file"
-		    (if (streamp file)
-			(stream-to-lines file)
-			(with-open-file (stream file :direction :input :element-type 'character)
-			  (stream-to-lines stream))))))
-      (st-json:read-json
-       (apply #'drakma:http-request (make-request-url server version service-point) (make-request-arguments key content))))))
-	
+  (assert (typep file '(or pathname string)))
+  (when (stringp file) (setq file (pathname file)))
+  (when (probe-file file)
+    (let ((response (drakma:http-request (make-request-url server version service-point)
+					 :method :post
+					 :additional-headers (list (cons :authorization (concatenate 'string "Bearer " key)))
+					 :want-stream t
+					 :parameters (list (cons "purpose" (stringify purpose))
+							   (cons "file" file)))))
+							       
+      (let* ((jso (st-json:read-json response))
+	     (status (st-json:getjso "status" jso)))
 
+	(if status
+	    (if (string= status "uploaded")
+		(st-json:getjso "id" jso)
+		jso)
+	    (let ((error (st-json:getjso "status" jso)))
+	      (if error
+		  (error (st-json:getjso "message" jso))
+		  jso)))))))
+	  
+      
+      
+
+     
 (defun gpt-delete-file (file-id &key
 			      (version *default-version*)
 			      (server  *default-server*)
@@ -922,12 +1036,19 @@ string
 Required
 The ID of the file to use for this request"
   (assert (stringp file-id))
-  (st-json:read-json
-   (drakma:http-request (make-request-url server version service-point file-id)
-			:method :delete
-			:additional-headers (list (cons :authorization (concatenate 'string "Bearer " key)))
-			:want-stream t)))
-			    
+  (let ((jso
+	  (st-json:read-json
+	   (drakma:http-request (make-request-url server version service-point file-id)
+				:method :delete
+				:additional-headers (list (cons :authorization (concatenate 'string "Bearer " key)))
+				:want-stream t))))
+    (let ((error (st-json:getjso "status" jso)))
+      (if error
+	  (error (st-json:getjso "message" jso))
+	  jso))    
+    (when (eq (st-json:getjso "deleted" jso) :true)
+      t)))
+	
 
 (defun get-file (file-id &key
 			   (version *default-version*)
@@ -982,25 +1103,73 @@ The ID of the file to use for this request"
 	  do (vector-push-extend char string)
 	  finally (return string))))
 
-(defun create-fine-tune (training-file &key
-					 (validation-file nil validation-file-present-p)
-					 (model nil model-present-p)
-					 (n-epochs nil n-epochs-present-p)
-					 (batch-size nil batch-size-present-p)
-					 (learning-rate-multiplier nil learning-rate-multiplier-present-p)
-					 (prompt-loss-weight nil prompt-loss-weight-present-p)
-					 (compute-classification-metrics
-					  nil compute-classification-metrics-present-p)
-					 (classification-n-classes nil classification-n-classes-present-p)
-					 (classification-positive-class
-					  nil classification-positive-class-present-p)
-					 (classification-betas nil classification-betas-present-p)
-					 (suffix nil suffix-present-p)
-					 (version *default-version*)
-					 (server  *default-server*)
-					 (key *key*)
-			 &aux (service-point "/fine-tunes"))
-  "Creates a job that fine-tunes a specified model from a given dataset.
+(defclass file ()
+  ((id :accessor id)
+   (object :accessor object)
+   (purpose :accessor purpose)
+   (filename :accessor filename)
+   (bytes :accessor bytes)
+   (created-at :accessor created-at)
+   (status :accessor status)
+   (status-details :accessor status-details)))
+
+(defun make-file (jso)
+  (let ((file (make-instance 'file)))
+    (setf (id file) (st-json:getjso "id" jso))
+    (setf (object file) (st-json:getjso "object" jso))
+    (setf (purpose file) (st-json:getjso "purpose" jso))
+    (setf (filename file) (st-json:getjso "filename" jso))
+    (setf (bytes file) (st-json:getjso "bytes" jso))
+    (setf (created-at file) (st-json:getjso "created_at" jso))
+    (setf (status file) (intern (string-upcase (st-json:getjso "status" jso)) 'keyword))
+    (setf (status-details file) (json-as-list (st-json:getjso "status_details" jso)))
+    file))
+
+(defclass fine-tune ()
+  ((id :accessor id)
+   (object :accessor object)
+   (hyperparams :accessor hyperparams)
+   (organization-id :accessor organization-id)
+   (model :accessor model)
+   (training-files :accessor training-files)
+   (validation-files :accessor validation-files)
+   (result-files :accessor result-files)
+   (created-at :accessor created-at)
+   (updated-at :accessor updated-at)
+   (status :accessor status)
+   (fine-tuned-model :accessor fine-tuned-model)))
+
+(defmethod print-object ((object fine-tune) stream)
+  (print-unreadable-object (object stream :type t)
+    (if (fine-tuned-model object)
+	(princ (fine-tuned-model object) stream)
+	(princ (id object) stream))
+    (format stream " ~S" (status object))
+    object))
+
+(defun make-fine-tune (jso)
+  (let ((fine-tune (make-instance 'fine-tune)))
+    (setf (id fine-tune) (st-json:getjso "id" jso)
+	  (object fine-tune) (st-json:getjso "object" jso)
+	  (hyperparams fine-tune) (st-json:getjso "hyperparams" jso)
+	  (model fine-tune) (st-json:getjso "model" jso)
+	  (training-files fine-tune) (mapcar #'(lambda (jso)
+						 (make-file jso))
+					     (json-as-list (st-json:getjso "training_files" jso)))
+	  (validation-files fine-tune) (mapcar #'(lambda (jso)
+						 (make-file jso))
+					       (json-as-list (st-json:getjso "validation_files" jso)))
+	  (result-files fine-tune) (mapcar #'(lambda (jso)
+					       (make-file jso))
+					   (json-as-list (st-json:getjso "result_files" jso)))
+	  (created-at fine-tune) (st-json:getjso "created_at" jso)
+	  (updated-at fine-tune) (st-json:getjso "updated_at" jso)
+	  (status fine-tune) (intern (string-upcase (st-json:getjso "status" jso)) 'keyword)
+	  (fine-tuned-model fine-tune) (json-as-list (st-json:getjso "fine_tuned_model" jso)))
+    fine-tune))
+
+(defgeneric create-fine-tune (training-file &rest args)
+  (:documentation "Creates a job that fine-tunes a specified model from a given dataset.
 
 Response includes details of the enqueued job including job status and the name of the fine-tuned models once complete.
 
@@ -1027,7 +1196,7 @@ Your dataset must be formatted as a JSONL file, where each validation example is
 See the fine-tuning guide for more details.
 
 `model'
-string or symbol
+model, string or symbol
 Optional
 Defaults to curie
 The name of the base model to fine-tune. You can select one of \"ada\", \"babbage\", \"curie\", \"davinci\", or a fine-tuned model created after 2022-04-21. To learn more about these models, see the Models documentation.
@@ -1100,40 +1269,72 @@ Optional
 Defaults to nil
 A string of up to 40 characters that will be added to your fine-tuned model name.
 
-For example, a suffix of \"custom-model-name\" would produce a model name like ada:ft-your-org:custom-model-name-2022-02-15-04-21-04."
+For example, a suffix of \"custom-model-name\" would produce a model name like ada:ft-your-org:custom-model-name-2022-02-15-04-21-04."))
+   
+(defmethod create-fine-tune ((training-file file) &rest args)
+  (apply #'create-fine-tune (id training-file) args))
+
+(defmethod create-fine-tune (training-file &rest args
+			     &key
+			       (validation-file nil validation-file-present-p)
+			       (model nil model-present-p)
+			       (n-epochs nil n-epochs-present-p)
+			       (batch-size nil batch-size-present-p)
+			       (learning-rate-multiplier nil learning-rate-multiplier-present-p)
+			       (prompt-loss-weight nil prompt-loss-weight-present-p)
+			       (compute-classification-metrics
+				nil compute-classification-metrics-present-p)
+			       (classification-n-classes nil classification-n-classes-present-p)
+			       (classification-positive-class
+				nil classification-positive-class-present-p)
+			       (classification-betas nil classification-betas-present-p)
+			       (suffix nil suffix-present-p)
+			       (version *default-version*)
+			       (server  *default-server*)
+			       (key *key*)
+			     &aux (service-point "/fine-tunes"))
+  
+  (declare (ignore args))
+  (when (typep model 'model)
+    (setq model (id model)))
   (assert (stringp training-file))
+  (assert (or (stringp model) (symbolp model)))
   (let* ((content (apply #'st-json:jso
 			 "training_file" training-file
-			 (when validation-file-present-p
-			   (list "validation_file" validation-file))
-			 (when model-present-p
-			   (list "model" (stringify model)))
-			 (when n-epochs-present-p
-			   (list "n_epochs" n-epochs))
-			 (when batch-size-present-p
-			   (list "batch_size" batch-size))
-			 (when learning-rate-multiplier-present-p
-			   (list "learning_rate_multiplier"
-				 learning-rate-multiplier))
-			 (when prompt-loss-weight-present-p
-			   (list "prompt_loss_weight" prompt-loss-weight))
-			 (when compute-classification-metrics-present-p
-			   (list "compute_classification_metrics"
-				 compute-classification-metrics))
-			 (when classification-n-classes-present-p
-			   (list "classification_n_classes"
-				 classification-n-classes))
-			 (when classification-positive-class-present-p
-			   (list "classification_positive_class"
-				 classification-positive-class))
-			 (when classification-betas-present-p
-			   (list "classification_betas"
-				 classification-betas))
-			 (when suffix-present-p
-			   (list "suffix" suffix)))))
-    (st-json:read-json
-     (apply #'drakma:http-request
-	    (make-request-url server version service-point) (make-request-arguments key content)))))
+			 (append
+			  (when validation-file-present-p
+			    (list "validation_file" validation-file))
+			  (when model-present-p
+			    (list "model" (stringify model)))
+			  (when n-epochs-present-p
+			    (list "n_epochs" n-epochs))
+			  (when batch-size-present-p
+			    (list "batch_size" batch-size))
+			  (when learning-rate-multiplier-present-p
+			    (list "learning_rate_multiplier"
+				  learning-rate-multiplier))
+			  (when prompt-loss-weight-present-p
+			    (list "prompt_loss_weight" prompt-loss-weight))
+			  (when compute-classification-metrics-present-p
+			    (list "compute_classification_metrics"
+				  compute-classification-metrics))
+			  (when classification-n-classes-present-p
+			    (list "classification_n_classes"
+				  classification-n-classes))
+			  (when classification-positive-class-present-p
+			    (list "classification_positive_class"
+				  classification-positive-class))
+			  (when classification-betas-present-p
+			    (list "classification_betas"
+				  classification-betas))
+			  (when suffix-present-p
+			    (list "suffix" suffix))))))
+    ;;(princ (st-json:write-json-to-string content))
+    (let ((jso (st-json:read-json
+		(apply #'drakma:http-request
+		       (make-request-url server version service-point) (make-request-arguments key content)))))
+      (check-for-error jso)
+      (make-fine-tune jso))))
     
 
 
@@ -1143,62 +1344,90 @@ For example, a suffix of \"custom-model-name\" would produce a model name like a
 			  (key *key*)
 			&aux (service-point "/fine-tunes"))
   "List your organization's fine-tuning jobs."
-  (st-json:read-json
-   (apply #'drakma:http-request (make-request-url server version service-point) (make-request-arguments key))))
+  (let ((jso (st-json:read-json
+	      (apply #'drakma:http-request (make-request-url server version service-point) (make-request-arguments key)))))
+    (check-for-error jso)
+    (let ((data (st-json:getjso "data" jso)))
+      (mapcar #'make-fine-tune data))))
 
-(defun get-fine-tune (fine-tune-id &key
-				     (version *default-version*)
-				     (server  *default-server*)
-				     (key *key*)
+(defgeneric get-fine-tune (fine-tune &rest args)
+  (:documentation "Gets info about the fine-tune job.
+
+`fine-tune'
+fine-tune or string
+Required
+The ID of the fine-tune job"))
+
+(defmethod get-fine-tune ((fine-tune fine-tune) &rest args)
+  (apply #'get-fine-tune (id fine-tune) args))
+
+(defmethod get-fine-tune (fine-tune-id &rest args
+		      &key
+			(version *default-version*)
+			(server  *default-server*)
+			(key *key*)
 		      &aux (service-point "/fine-tunes/~A"))
-  "Gets info about the fine-tune job.
+  
+  (declare (ignore args))
+  (assert (stringp fine-tune-id))
+  (let ((jso (st-json:read-json
+	      (apply #'drakma:http-request (make-request-url server version service-point fine-tune-id) (make-request-arguments key)))))
+    (check-for-error jso)
+    (make-fine-tune jso)))
+
+(defgeneric cancel-fine-tune (fine-tune &rest args)
+  (:documentation "Immediately cancel a fine-tune job.
 
 `fine-tune-id'
 string
 Required
-The ID of the fine-tune job"  
-  (assert (stringp fine-tune-id))
-  (st-json:read-json
-   (apply #'drakma:http-request (make-request-url server version service-point fine-tune-id) (make-request-arguments key))))
+The ID of the fine-tune job to cancel"))
 
-(defun cancel-fine-tune (fine-tune-id &key
-					(version *default-version*)
-					(server  *default-server*)
-					(key *key*)
+(defmethod cancel-fine-tune ((fine-tune fine-tune) &rest args)
+  (apply #'cancel-fine-tune (id fine-tune) args))
+
+(defmethod cancel-fine-tune (fine-tune-id &rest args
+			     &key
+			       (version *default-version*)
+			       (server  *default-server*)
+			       (key *key*)
 			 &aux (service-point "/fine-tunes/~A/cancel"))
-  "Immediately cancel a fine-tune job.
-
-`fine-tune-id'
-string
-Required
-The ID of the fine-tune job to cancel"
+  
+  (declare (ignore args))
   (assert (stringp fine-tune-id))
-  (st-json:read-json
-   (apply #'drakma:http-request (make-request-url server version service-point fine-tune-id) (make-request-arguments key))))
+  (let ((jso (st-json:read-json
+	      (drakma:http-request (make-request-url server version service-point fine-tune-id)
+				   :method :post
+				   :additional-headers (list (cons :authorization (concatenate 'string "Bearer " key)))
+				   :want-stream t))))
+    (check-for-error jso)
+    (make-fine-tune jso)))
 
-(defun list-fine-tune-events-as-stream (fine-tune-id &key
-						    (version *default-version*)
-						    (server  *default-server*)
-						    (key *key*)
-					&aux (service-point "/fine-tunes/~A/cancel?stream=true"))
-  "Get fine-grained status updates for a fine-tune job as a stream.
+(defgeneric list-fine-tune-events-as-stream (fine-tune &rest args)
+  (:documentation "Get fine-grained status updates for a fine-tune job as a stream.
 
 `fine-tune-id'
 string
 Required
-The ID of the fine-tune job to get events for."
+The ID of the fine-tune job to get events for."))
+
+(defmethod list-fine-tune-events-as-stream ((fine-tune fine-tune) &rest args)
+  (apply #'list-fine-tune-events-as-stream (id fine-tune) args))
+
+(defmethod list-fine-tune-events-as-stream (fine-tune-id &rest args
+					    &key
+					      (version *default-version*)
+					      (server  *default-server*)
+					      (key *key*)
+					&aux (service-point "/fine-tunes/~A/cancel?stream=true"))
+  (declare (ignore args))
   (assert (stringp fine-tune-id))
   (apply #'drakma:http-request
 	 (make-request-url server version service-point fine-tune-id)
 	 (make-request-arguments key)))
 
-(defun list-fine-tune-events (fine-tune-id &key
-					     (stream nil)
-					     (version *default-version*)
-					     (server  *default-server*)
-					     (key *key*)
-			      &aux (service-point "/fine-tunes/~A/cancel?stream=~A"))
-  "Get fine-grained status updates for a fine-tune job.
+(defgeneric list-fine-tune-events (fine-tune &rest args)
+  (:documentation "Get fine-grained status updates for a fine-tune job.
 
 `fine-tune-id'
 string
@@ -1211,31 +1440,62 @@ Optional
 Defaults to nil
 Whether to stream events for the fine-tune job. If set to true, events will be sent as data-only server-sent events as they become available. The stream will terminate with a data: [DONE] message when the job is finished (succeeded, cancelled, or failed).
 
-If set to false, only events generated so far will be returned."
+If set to false, only events generated so far will be returned."))
+
+(defmethod list-fine-tune-events ((fine-tune fine-tune) &rest args)
+  (apply #'list-fine-tune-events (id fine-tune) args))
+
+(defmethod list-fine-tune-events (fine-tune-id &rest args
+				  &key
+				    (stream nil)
+				    (version *default-version*)
+				    (server  *default-server*)
+				    (key *key*)
+				  &aux (service-point "/fine-tunes/~A/cancel?stream=~A"))
+  (declare (ignore args))
   (assert (stringp fine-tune-id))
   (if stream
       (list-fine-tune-events-as-stream fine-tune-id :version version :server server :key key)
-      (st-json:read-json
-       (apply #'drakma:http-request
-	      (make-request-url server version service-point fine-tune-id "false")
-	      (make-request-arguments key)))))
+      (let ((jso (st-json:read-json
+		  (apply #'drakma:http-request
+			 (make-request-url server version service-point fine-tune-id "false")
+			 (make-request-arguments key)))))
+	(check-for-error jso)
+	jso)))
 
-(defun delete-fine-tune (model &key  
-				 (version *default-version*)
-				 (server  *default-server*)
-				 (key *key*)
-			 &aux (service-point "/models/~A"))
-  "Delete a fine-tuned model. You must have the Owner role in your organization.
+(defgeneric delete-fine-tune (object &rest args)
+  (:documentation "Delete a fine-tuned model. You must have the Owner role in your organization.
 
-`model'
-string or symbol
+`object'
+fine-tune, model, or string or symbol representing model
 Required
-The model to delete"
-  (st-json:read-json
-   (drakma:http-request (make-request-url server version service-point (stringify model))
-			:method :delete
-			:additional-headers (list (cons :authorization (concatenate 'string "Bearer " key)))
-			:want-stream t)))
+The model to delete"))
+
+(defmethod delete-fine-tune ((fine-tune fine-tune) &rest args)
+  (apply #'delete-fine-tune (fine-tuned-model fine-tune) args))
+
+(defmethod delete-fine-tune ((model model) &rest args)
+  (apply #'delete-fine-tune (id model) args))
+
+(defmethod delete-fine-tune (model &rest args
+			     &key  
+			       (version *default-version*)
+			       (server  *default-server*)
+			       (key *key*)
+			     &aux (service-point "/models/~A"))
+  
+  (declare (ignore args))
+  (when (typep model 'model)
+    (setq model (id model)))
+  (let ((jso
+	  (st-json:read-json
+	   (drakma:http-request (make-request-url server version service-point (stringify model))
+				:method :delete
+				:additional-headers (list (cons :authorization (concatenate 'string "Bearer " key)))
+				:want-stream t))))
+    (check-for-error jso)
+    (let ((deleted (st-json:getjso "deleted" jso)))
+      (json-as-boolean deleted))))
 
 (defun create-moderation (input &key
 				  (model nil model-present-p)
@@ -1266,8 +1526,70 @@ The default is text-moderation-latest which will be automatically upgraded over 
      (apply #'drakma:http-request
 	    (make-request-url server version service-point) (make-request-arguments key content)))))
 
+(defvar *conversation-history* "")
 
-(defun chat (string &optional (model :gpt-3.5-turbo) (temperature 0.7))
-  (princ (st-json:getjso "content" (st-json:getjso "message" (first (st-json:getjso "choices" (create-chat-completion model (list "role" "user" "content" string) :temperature temperature))))))
-  (values))
+(defun reset-chat-context ()
+  (setq *conversation-history* "")
+  t)
 
+(defun drop-some-interactions ()
+  (setq *conversation-history* (subseq *conversation-history* (search "Prompt:" *conversation-history* :start2 (+ 512 (- (length *conversation-history*) 4096))))))
+	
+
+(defun chat (prompt &key (output *standard-output*) (model :text-davinci-003) (temperature 0.7))
+  (setq *conversation-history* (concatenate 'string *conversation-history* "Prompt: " prompt (list #\Newline)))
+    (when (> (length *conversation-history*) 4096)
+      (drop-some-interactions))
+    (let ((stream (create-completion model :prompt (list *conversation-history*) :stream t :temperature temperature :max-tokens (- 4096 (length *conversation-history*))))
+	  (line)
+	  (json))
+      (tagbody
+       get-line
+	 (setq line (read-line stream nil :eof))
+	 (when (eq line :eof) (return-from chat (values)))
+	 
+	 (setq json (concatenate 'string json line))
+
+	 (handler-bind
+	     ((error #'(lambda (c) (declare (ignore c)) (go get-line))))
+	   (if (> (length line) 5)
+	       (let ((json (subseq line 6)))
+		 (when (eq 0 (search "data: " line))
+		   (if (string= json "[DONE]")
+		       (progn
+			 (setq *conversation-history* (concatenate 'string *conversation-history* (list #\Newline #\Newline)))
+			 (terpri output)
+			 (princ "[DONE]" output)
+			 (finish-output output))
+		       (let ((jso (st-json:read-json-from-string json)))
+
+			 (let ((choices (st-json:getjso "choices" jso)))
+			   (if choices
+			       (let ((text (st-json:getjso "text" (first choices))))
+				 (if text
+				     (progn
+				       (setq *conversation-history* (concatenate 'string *conversation-history* text))
+				       (princ text output)
+				       (finish-output output))))))))
+		   (go get-line))
+		 (st-json:read-json-from-string json :junk-allowed-p nil)
+		 (go check-error)))
+	   (progn
+	     (st-json:read-json-from-string json :junk-allowed-p nil)
+	     (go check-error)))
+       check-error
+	 (let ((jso (st-json:read-json-from-string json :junk-allowed-p nil)))
+	   (unwind-protect (check-for-error jso)
+	     (return-from chat jso))))
+      (values)))
+
+	       
+		   
+		   
+	       
+		     
+		      
+		       
+
+	  
+  
