@@ -169,35 +169,11 @@ arguments:
     (check-for-error jso)
     (make-model jso)))
 
-(defmethod create-completion ((model model) &rest args)
-  (apply #'create-completion (id model) args))
-
-(defmethod create-completion (model &rest args
-			      &key
-				(prompt            nil prompt-present-p)
-				(suffix            nil suffix-present-p)
-				(max-tokens        nil max-tokens-present-p)
-				(temperature       nil temperature-present-p)
-				(top-p             nil top-p-present-p)
-				(n                 nil n-present-p)
-				(stream            nil stream-present-p)
-				(logprobs          nil logprobs-present-p)
-				(echo              nil echo-present-p)
-				(stop              nil stop-present-p)
-				(presence-penalty  nil presence-penalty-present-p)
-				(frequency-penalty nil frequency-penalty-present-p)
-				(best-of           nil best-of-present-p)
-				(logit-bias        nil logit-bias-present-p)
-				(user              nil user-present-p)
-				(version           *default-version*)
-				(server            *default-server*)
-				(key *key*)
-				
-			      &aux (service-point "/completions"))
-  "Creates a completion for the provided prompt and parameters
+(defgeneric create-completion (model &rest args)
+  (:documentation "Creates a completion for the provided prompt and parameters
 
 `model'
-string or symbol
+model, string or symbol
 Required
 ID of the model to use. You can use the List models API to see all of your available models, or see our Model overview for descriptions of them.
 
@@ -312,7 +288,35 @@ As an example, you can pass (list \"50256\" -100) to prevent the \"<|endoftext|>
 `user'
 string
 Optional
-A unique identifier representing your end-user, which can help OpenAI to monitor and detect abuse."
+A unique identifier representing your end-user, which can help OpenAI to monitor and detect abuse."))
+				     
+
+(defmethod create-completion ((model model) &rest args)
+  (apply #'create-completion (id model) args))
+
+(defmethod create-completion (model &rest args
+			      &key
+				(prompt            nil prompt-present-p)
+				(suffix            nil suffix-present-p)
+				(max-tokens        nil max-tokens-present-p)
+				(temperature       nil temperature-present-p)
+				(top-p             nil top-p-present-p)
+				(n                 nil n-present-p)
+				(stream            nil stream-present-p)
+				(logprobs          nil logprobs-present-p)
+				(echo              nil echo-present-p)
+				(stop              nil stop-present-p)
+				(presence-penalty  nil presence-penalty-present-p)
+				(frequency-penalty nil frequency-penalty-present-p)
+				(best-of           nil best-of-present-p)
+				(logit-bias        nil logit-bias-present-p)
+				(user              nil user-present-p)
+				(version           *default-version*)
+				(server            *default-server*)
+				(key *key*)
+				
+			      &aux (service-point "/completions"))
+  
   (declare (ignore args))
   (assert (or (symbolp model) (stringp model)))
   (let* ((content (apply #'st-json:jso
@@ -370,18 +374,30 @@ A unique identifier representing your end-user, which can help OpenAI to monitor
 	  (check-for-error jso)
 	  jso))))
 
-(defgeneric create-chat-completion (model messages &rest args)
-  (:documentation "Creates a completion for the chat message.
+(defgeneric create-chat-completion (model prompt &rest args)
+  (:documentation "Creates a completion for the chat message.  Note, the combined number of tokens in `prompt', `context' `system-instruction', and the generated completion cannot exceed 4096 for model :gpt-3.5-turbo and 2048 for older models.
 
 `model'
 string or symbol
 Required
 ID of the model to use. See the model endpoint compatibility table for details on which models work with the Chat API.
 
-`messages'
-plist
+`prompt'
+string
 Required
-The messages to generate chat completions for, in the chat format.
+The prompt to generate a completion for.
+
+`context'
+an even length list of strings
+Optional
+Defaults to nil
+List should be composed of alternating pairs of prompt and it associated completion, for context.
+
+`system-instruction'
+string or null
+Optional
+Defaults to nil
+Should be an instruction to chatgpt of what role it should assume.
 
 `temperature'
 number
@@ -455,70 +471,84 @@ Optional
 A unique identifier representing your end-user, which can help OpenAI to monitor and detect abuse."))
   
 
-(defmethod create-chat-completion ((model model) messages &rest args)
-  (apply #'create-chat-completion (id model) messages args))			       
+(defmethod create-chat-completion ((model model) prompt &rest args)
+  (apply #'create-chat-completion (id model) prompt args))
 
-(defmethod create-chat-completion (model messages &rest args
+(defmethod create-chat-completion (model prompt &rest args
 				   &key
-				     (temperature       nil temperature-present-p)
-				     (top-p             nil top-p-present-p)
-				     (n                 nil n-present-p)
-				     (stream            nil stream-present-p)
-				     (stop              nil stop-present-p)
-				     (max-tokens        nil max-tokens-present-p)
-				     (presence-penalty  nil presence-penalty-present-p)
-				     (frequency-penalty nil frequency-penalty-present-p)
-				     (logit-bias        nil logit-bias-present-p)
-				     (user              nil user-present-p)
-				     (version           *default-version*)
-				     (server            *default-server*)
+				     (system-instruction nil system-instruction-present-p)
+				     (context            nil)
+				     (temperature        nil temperature-present-p)
+				     (top-p              nil top-p-present-p)
+				     (n                  nil n-present-p)
+				     (stream             nil stream-present-p)
+				     (stop               nil stop-present-p)
+				     (max-tokens         nil max-tokens-present-p)
+				     (presence-penalty   nil presence-penalty-present-p)
+				     (frequency-penalty  nil frequency-penalty-present-p)
+				     (logit-bias         nil logit-bias-present-p)
+				     (user               nil user-present-p)
+				     (version            *default-version*)
+				     (server             *default-server*)
 				     (key *key*)
 				   &aux (service-point "/chat/completions"))
   (declare (ignore args))
   (assert (or (symbolp model) (stringp model)))
-  (assert (typep messages 'sequence))
-  (let* ((content (apply #'st-json:jso
-			 "model" (stringify model)
-			 "messages" (list
-				     (apply #'st-json::jso messages))
-			 (append
-			  (when temperature-present-p
-			    (assert (numberp temperature))
-			    (assert (<= 0 temperature 2))
-			    (list "temperature" temperature))
-			  (when top-p-present-p
-			    (assert (numberp top-p))
-			    (list "top_p" top-p))
-			  (when n-present-p
-			    (assert (integerp n))
-			    (list "n" n))
-			  (when stream-present-p
-			    (list "stream" (if stream :true :false)))
-			  (when stop-present-p
-			    (assert (typep stop 'sequence))
-			    (list "stop" stop))
-			  (when max-tokens-present-p
-			    (assert (integerp max-tokens))
-			    (list "max_tokens" max-tokens))
-			  (when presence-penalty-present-p
-			    (assert (numberp presence-penalty))
-			    (list "presence_penalty" presence-penalty))
-			  (when frequency-penalty-present-p
-			    (assert (numberp frequency-penalty))
-			    (list "frequency_penalty" frequency-penalty))
-			  (when logit-bias-present-p
-			    (assert (listp logit-bias))
-			    (list "logit_bias" logit-bias))
-			  (when user-present-p
-			    (assert (stringp user))
-			    (list "user" user)))))
-	 (response-stream
-	   (apply #'drakma:http-request (make-request-url server version service-point) (make-request-arguments key content))))
-    (if stream
-	response-stream
-	(let* ((jso (st-json:read-json response-stream)))
-	  (check-for-error jso)
-	  jso))))
+  (assert (listp context))
+  (assert (evenp (length context)))
+  (flet ((create-messages-argument ()
+	   (mapcar #'(lambda (plist)
+		       (apply #'st-json:jso plist))
+		   (append (when system-instruction-present-p
+			     (list (list "role" "system" "content" system-instruction)))
+			   (loop with list = ()
+				 for (prompt completion) on context by #'cddr
+				 do (push (list "role" "user" "content" (format nil "~A" prompt)) list)
+				    (push (list "role" "assistant" "content" (format nil "~A" completion)) list)
+				 finally (return (nreverse list)))
+			   (list (list "role" "user" "content" prompt))))))
+    (let* ((content (apply #'st-json:jso
+			   "model" (stringify model)
+			   "messages" (create-messages-argument)
+			   (append
+			    (when temperature-present-p
+			      (assert (numberp temperature))
+			      (assert (<= 0 temperature 2))
+			      (list "temperature" temperature))
+			    (when top-p-present-p
+			      (assert (numberp top-p))
+			      (list "top_p" top-p))
+			    (when n-present-p
+			      (assert (integerp n))
+			      (list "n" n))
+			    (when stream-present-p
+			      (list "stream" (if stream :true :false)))
+			    (when stop-present-p
+			      (assert (typep stop 'sequence))
+			      (list "stop" stop))
+			    (when max-tokens-present-p
+			      (assert (integerp max-tokens))
+			      (list "max_tokens" max-tokens))
+			    (when presence-penalty-present-p
+			      (assert (numberp presence-penalty))
+			      (list "presence_penalty" presence-penalty))
+			    (when frequency-penalty-present-p
+			      (assert (numberp frequency-penalty))
+			      (list "frequency_penalty" frequency-penalty))
+			    (when logit-bias-present-p
+			      (assert (listp logit-bias))
+			      (list "logit_bias" logit-bias))
+			    (when user-present-p
+			      (assert (stringp user))
+			      (list "user" user)))))
+	   #+NIL(pr (princ (st-json:write-json-to-string content)))
+	   (response-stream
+	     (apply #'drakma:http-request (make-request-url server version service-point) (make-request-arguments key content))))
+      (if stream
+	  response-stream
+	  (let* ((jso (st-json:read-json response-stream)))
+	    (check-for-error jso)
+	    jso)))))
 	  
 
 (defun create-edit (instruction &key
@@ -977,7 +1007,7 @@ The sampling temperature, between 0 and 1. Higher values like 0.8 will make the 
    (apply #'drakma:http-request (make-request-url server version service-point) (make-request-arguments key))))
   
 
-(defun upload-jsonl-file (file &key
+(defun upload-file (file &key
 			   (purpose :fine-tune)
 			   (version *default-version*)
 			   (server  *default-server*)
@@ -988,7 +1018,7 @@ The sampling temperature, between 0 and 1. Higher values like 0.8 will make the 
 `file'
 string or pathname
 Required
-The JSON Lines file to be uploaded.
+The file to be uploaded.
 
 If the purpose is set to :fine-tune, each line is a JSON record with \"prompt\" and \"completion\" fields representing your training examples.
 
@@ -1526,27 +1556,38 @@ The default is text-moderation-latest which will be automatically upgraded over 
      (apply #'drakma:http-request
 	    (make-request-url server version service-point) (make-request-arguments key content)))))
 
-(defvar *conversation-history* "")
+(defvar *conversation-history* ())
 
 (defun reset-chat-context ()
-  (setq *conversation-history* "")
+  (setq *conversation-history* ())
   t)
 
-(defun drop-some-interactions ()
-  (setq *conversation-history* (subseq *conversation-history* (search "Prompt:" *conversation-history* :start2 (+ 512 (- (length *conversation-history*) 4096))))))
+(defun drop-some-interactions (&optional (n 1))
+  (setq *conversation-history* (subseq *conversation-history* (* 2 n))))
 	
 
-(defun chat (prompt &key (output *standard-output*) (model :text-davinci-003) (temperature 0.7))
-  (setq *conversation-history* (concatenate 'string *conversation-history* "Prompt: " prompt (list #\Newline)))
-    (when (> (length *conversation-history*) 4096)
-      (drop-some-interactions))
-    (let ((stream (create-completion model :prompt (list *conversation-history*) :stream t :temperature temperature :max-tokens (- 4096 (length *conversation-history*))))
-	  (line)
-	  (json))
+(defun chat (prompt &key (output *standard-output*) (model :gpt-3.5-turbo) (temperature 0.7) (reset-context nil)
+		      (max-context-length 6)
+		      (system-instruction "You are a helpful assistant."))
+  (when reset-context
+    (reset-chat-context))
+  (when (> (length *conversation-history*) (* 2 max-context-length))
+    (drop-some-interactions (- (/ (length *conversation-history*) 2) max-context-length)))
+  (let ((stream (create-chat-completion model prompt
+					:stream t :temperature temperature
+					:context *conversation-history* 
+					:system-instruction system-instruction))
+	(line)
+	(json)
+	(completion ""))
+
+    (block do-chat
       (tagbody
        get-line
 	 (setq line (read-line stream nil :eof))
-	 (when (eq line :eof) (return-from chat (values)))
+	 (when (eq line :eof)
+	   (setq *conversation-history* (append *conversation-history* (list prompt completion)))
+	   (return-from do-chat (values)))
 	 
 	 (setq json (concatenate 'string json line))
 
@@ -1557,20 +1598,19 @@ The default is text-moderation-latest which will be automatically upgraded over 
 		 (when (eq 0 (search "data: " line))
 		   (if (string= json "[DONE]")
 		       (progn
-			 (setq *conversation-history* (concatenate 'string *conversation-history* (list #\Newline #\Newline)))
 			 (terpri output)
 			 (princ "[DONE]" output)
 			 (finish-output output))
 		       (let ((jso (st-json:read-json-from-string json)))
-
 			 (let ((choices (st-json:getjso "choices" jso)))
-			   (if choices
-			       (let ((text (st-json:getjso "text" (first choices))))
-				 (if text
-				     (progn
-				       (setq *conversation-history* (concatenate 'string *conversation-history* text))
-				       (princ text output)
-				       (finish-output output))))))))
+			   (when choices
+			     (let ((delta (st-json:getjso "delta" (first choices))))
+			       (when delta
+				 (let ((content (st-json:getjso "content" delta)))
+				   (when content
+				     (setq completion (concatenate 'string completion content))
+				     (princ content output)
+				     (finish-output output)))))))))
 		   (go get-line))
 		 (st-json:read-json-from-string json :junk-allowed-p nil)
 		 (go check-error)))
@@ -1580,16 +1620,4 @@ The default is text-moderation-latest which will be automatically upgraded over 
        check-error
 	 (let ((jso (st-json:read-json-from-string json :junk-allowed-p nil)))
 	   (unwind-protect (check-for-error jso)
-	     (return-from chat jso))))
-      (values)))
-
-	       
-		   
-		   
-	       
-		     
-		      
-		       
-
-	  
-  
+	     (return-from do-chat jso)))))))
